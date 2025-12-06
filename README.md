@@ -29,6 +29,7 @@ Install the required packages in Colab or your local environment:
 
 ```bash
 !pip install roboflow ultralytics torch torchvision
+```
 
 ---
 
