@@ -9,15 +9,16 @@ import torch
 import torch.nn as nn
 from PIL import Image
 from torchvision import transforms, models
-from rembg import remove  # Background removal
+from rembg import remove
 
 from PySide6.QtWidgets import (
     QApplication, QWidget, QLabel, QPushButton, QFileDialog,
     QVBoxLayout, QHBoxLayout, QMessageBox, QFrame,
-    QListWidget, QProgressBar, QStackedWidget, QCheckBox
+    QListWidget, QProgressBar, QStackedWidget, QCheckBox,
+    QSizePolicy, QScrollArea
 )
-from PySide6.QtGui import QPixmap, QColor, QIcon
-from PySide6.QtCore import Qt, Signal, QThread, QSize
+from PySide6.QtGui import QPixmap, QColor, QIcon, QDragEnterEvent, QDropEvent, QFont
+from PySide6.QtCore import Qt, Signal, QThread, QSize, QEvent
 from PySide6.QtTextToSpeech import QTextToSpeech
 
 # ───────────────────────────────────────────────
@@ -33,79 +34,120 @@ SETTINGS_PATH = "app_settings.json"
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # ───────────────────────────────────────────────
-# 🎨 DYNAMIC STYLESHEETS (IMPROVED)
+# 📖 RECOMMENDATION DATABASE
+# ───────────────────────────────────────────────
+
+DISEASE_KNOWLEDGE_BASE = {
+    "potatoearlyblight": {
+        "Remedy": "Fungicides with Chlorothalonil or Mancozeb.",
+        "Organic": "Copper-based sprays / Bacillus subtilis.",
+        "Action": "Rotate crops and keep leaves dry."
+    },
+    "potatolateblight": {
+        "Remedy": "Curzate, Revus Top, or Copper fungicides.",
+        "Organic": "Strict sanitation; destroy infected plants.",
+        "Action": "High-risk! Alert nearby farmers immediately."
+    },
+    "potatohealthy": {
+        "Remedy": "None required.",
+        "Organic": "Compost tea for immunity.",
+        "Action": "Maintain soil pH 4.8-5.5."
+    },
+    "tomatobacterialspot": {
+        "Remedy": "Copper bactericides + Mancozeb.",
+        "Organic": "Potassium bicarbonate / Organic copper.",
+        "Action": "Do not handle plants when wet."
+    },
+    "tomatoearlyblight": {
+        "Remedy": "Daconil / Chlorothalonil.",
+        "Organic": "Neem oil; remove lower leaves.",
+        "Action": "Mulch base to stop soil splash."
+    },
+    "tomatolateblight": {
+        "Remedy": "Ranman / Copper sprays (7-10 days).",
+        "Organic": "Aggressive pruning.",
+        "Action": "Act immediately; highly destructive."
+    },
+    "tomatoleafmold": {
+        "Remedy": "Difenoconazole.",
+        "Organic": "Increase ventilation.",
+        "Action": "Prune lower suckers for airflow."
+    },
+    "tomatoseptorialeafspot": {
+        "Remedy": "Chlorothalonil / Azoxystrobin.",
+        "Organic": "Remove infected leaves early.",
+        "Action": "Rotate crops every 3 years."
+    },
+    "tomatoyellowleafcurlvirus": {
+        "Remedy": "None (Viral). Control Whiteflies.",
+        "Organic": "Yellow sticky traps / Insecticidal soap.",
+        "Action": "Remove and bury infected plants."
+    },
+    "tomatohealthy": {
+        "Remedy": "None needed.",
+        "Organic": "Balanced nutrition.",
+        "Action": "Monitor for aphids/hornworms."
+    }
+}
+
+# ───────────────────────────────────────────────
+# 🎨 STYLESHEETS
 # ───────────────────────────────────────────────
 
 def get_stylesheet(dark_mode=False):
-    if dark_mode:
-        return """
-        /* DARK MODE */
-        QWidget { font-family: 'Segoe UI', sans-serif; font-size: 14px; color: #cbd5e1; }
-        QWidget#RootWidget { background-color: #0f172a; } /* Main Window Background */
+    primary = "#34d399" if dark_mode else "#059669"
+    bg = "#0f172a" if dark_mode else "#f8fafc"
+    card_bg = "#1e293b" if dark_mode else "#ffffff"
+    text_main = "#f1f5f9" if dark_mode else "#1e293b"
+    text_sub = "#94a3b8" if dark_mode else "#64748b"
+    border = "#334155" if dark_mode else "#cbd5e1"
 
-        /* Sidebar */
-        QFrame#Sidebar { background-color: #1e293b; min-width: 240px; border-right: 1px solid #334155; }
-        QLabel#SidebarTitle { color: #34d399; font-size: 26px; font-weight: bold; padding: 30px 20px; }
+    return f"""
+    QWidget {{ font-family: 'Segoe UI', sans-serif; font-size: 14px; color: {text_sub}; }}
+    QWidget#RootWidget {{ background-color: {bg}; }}
+    
+    /* SIDEBAR */
+    QFrame#Sidebar {{ background-color: {card_bg}; border-right: 1px solid {border}; min-width: 240px; }}
+    QLabel#SidebarTitle {{ color: {primary}; font-size: 26px; font-weight: 800; padding: 30px 20px; }}
+    QPushButton#NavBtn {{ 
+        background-color: transparent; color: {text_sub}; text-align: left; 
+        padding: 12px 20px; border: none; border-radius: 8px; margin: 4px 15px; font-weight: 600; font-size: 15px;
+    }}
+    QPushButton#NavBtn:checked {{ background-color: {primary}; color: {bg}; }}
+    QPushButton#NavBtn:hover {{ background-color: {border}; }}
 
-        /* Navigation Buttons */
-        QPushButton#NavBtn { background-color: transparent; color: #94a3b8; text-align: left; padding: 12px 20px; border: none; border-radius: 10px; margin: 4px 15px; font-weight: 600; }
-        QPushButton#NavBtn:hover { background-color: #334155; color: white; }
-        QPushButton#NavBtn:checked { background-color: #34d399; color: #0f172a; }
+    /* CARDS */
+    QFrame#Card {{ background-color: {card_bg}; border-radius: 16px; border: 1px solid {border}; }}
+    QLabel#Header {{ font-size: 24px; font-weight: 700; color: {text_main}; margin-bottom: 10px; }}
+    
+    /* RESULTS */
+    QLabel#BigPercent {{ font-size: 48px; font-weight: 900; color: {primary}; margin: 5px 0; }}
+    QLabel#ResultTitle {{ font-size: 20px; font-weight: 700; color: {text_main}; }}
+    QLabel#SectionTitle {{ font-size: 14px; font-weight: 700; color: {text_main}; text-transform: uppercase; letter-spacing: 1px; }}
 
-        /* Cards */
-        QFrame#Card { background-color: #1e293b; border-radius: 16px; border: 1px solid #334155; }
-        
-        /* Text & Headers */
-        QLabel#Header { font-size: 24px; font-weight: bold; color: #f1f5f9; margin-bottom: 10px; }
-        QLabel#SubHeader { font-size: 14px; color: #94a3b8; }
-        QLabel#ResultText { font-size: 20px; font-weight: bold; color: #34d399; }
-        QLabel#DropZone { background-color: #0f172a; border: 2px dashed #475569; border-radius: 16px; color: #64748b; }
+    /* IMAGE AREA */
+    QLabel#DropZone {{ 
+        background-color: {bg}; border: 3px dashed {border}; border-radius: 16px; 
+        color: {text_sub}; font-size: 16px; font-weight: 600;
+    }}
 
-        /* Buttons */
-        QPushButton#PrimaryBtn { background-color: #34d399; color: #0f172a; font-weight: bold; border-radius: 10px; padding: 12px; border: none; }
-        QPushButton#PrimaryBtn:hover { background-color: #10b981; }
-        QPushButton#SecondaryBtn { background-color: #334155; color: white; border-radius: 10px; padding: 12px; border: 1px solid #475569; }
-        QPushButton#SecondaryBtn:hover { background-color: #475569; }
-        
-        QListWidget { background-color: #1e293b; border: 1px solid #334155; border-radius: 10px; color: #cbd5e1; }
-        """
-    else:
-        return """
-        /* LIGHT MODE - CLEAN & MODERN */
-        QWidget { font-family: 'Segoe UI', sans-serif; font-size: 14px; color: #334155; }
-        QWidget#RootWidget { background-color: #f8fafc; } /* Slate 50 Background */
+    /* BUTTONS */
+    QPushButton#PrimaryBtn {{ background-color: {primary}; color: {bg}; font-weight: 700; border-radius: 10px; padding: 12px; font-size: 15px; }}
+    QPushButton#PrimaryBtn:hover {{ background-color: #10b981; }}
+    QPushButton#SecondaryBtn {{ background-color: {card_bg}; color: {text_main}; border: 1px solid {border}; border-radius: 10px; padding: 12px; font-weight: 600; }}
+    QPushButton#SecondaryBtn:hover {{ background-color: {border}; }}
 
-        /* Sidebar */
-        QFrame#Sidebar { background-color: #ffffff; min-width: 240px; border-right: 1px solid #e2e8f0; }
-        QLabel#SidebarTitle { color: #059669; font-size: 26px; font-weight: bold; padding: 30px 20px; }
-
-        /* Navigation Buttons */
-        QPushButton#NavBtn { background-color: transparent; color: #64748b; text-align: left; padding: 12px 20px; border: none; border-radius: 10px; margin: 4px 15px; font-weight: 600; }
-        QPushButton#NavBtn:hover { background-color: #f1f5f9; color: #0f172a; }
-        QPushButton#NavBtn:checked { background-color: #d1fae5; color: #065f46; } /* Soft Green Pill */
-
-        /* Cards */
-        QFrame#Card { background-color: #ffffff; border-radius: 16px; border: 1px solid #cbd5e1; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1); }
-
-        /* Text & Headers */
-        QLabel#Header { font-size: 24px; font-weight: bold; color: #1e293b; margin-bottom: 10px; }
-        QLabel#SubHeader { font-size: 14px; color: #64748b; }
-        QLabel#ResultText { font-size: 20px; font-weight: bold; color: #059669; }
-        QLabel#DropZone { background-color: #f8fafc; border: 2px dashed #cbd5e1; border-radius: 16px; color: #64748b; font-weight: 500; }
-
-        /* Buttons */
-        QPushButton#PrimaryBtn { background-color: #059669; color: white; font-weight: bold; border-radius: 10px; padding: 12px; border: none; }
-        QPushButton#PrimaryBtn:hover { background-color: #047857; }
-        QPushButton#SecondaryBtn { background-color: #ffffff; color: #475569; border: 1px solid #cbd5e1; border-radius: 10px; padding: 12px; font-weight: 600; }
-        QPushButton#SecondaryBtn:hover { background-color: #f1f5f9; border-color: #94a3b8; }
-        
-        QListWidget { background-color: #ffffff; border: 1px solid #cbd5e1; border-radius: 10px; padding: 10px; outline: none; }
-        QListWidget::item { padding: 10px; border-bottom: 1px solid #f1f5f9; }
-        QListWidget::item:selected { background-color: #f0fdf4; color: #166534; }
-        """
+    QCheckBox {{ color: {text_main}; font-size: 15px; spacing: 10px; }}
+    QCheckBox::indicator {{ width: 20px; height: 20px; border-radius: 4px; border: 2px solid {border}; }}
+    QCheckBox::indicator:checked {{ background-color: {primary}; border-color: {primary}; }}
+    
+    QListWidget {{ background-color: {card_bg}; border: 1px solid {border}; border-radius: 10px; padding: 10px; font-size: 14px; color: {text_main}; }}
+    QProgressBar {{ border: 1px solid {border}; border-radius: 5px; text-align: center; }}
+    QProgressBar::chunk {{ background-color: {primary}; }}
+    """
 
 # ───────────────────────────────────────────────
-# 🧵 SEGMENTATION & PREDICTION THREAD
+# 🧵 WORKER THREAD (Background Removal + Inference)
 # ───────────────────────────────────────────────
 
 class AnalysisThread(QThread):
@@ -124,18 +166,19 @@ class AnalysisThread(QThread):
 
     def run(self):
         try:
-            # 1. Background Removal
+            # 1. Load & Remove Background
             raw_image = Image.open(self.image_path).convert("RGB")
             img_byte_arr = io.BytesIO()
             raw_image.save(img_byte_arr, format='PNG')
-            output_bytes = remove(img_byte_arr.getvalue())
+            output_bytes = remove(img_byte_arr.getvalue()) # Rembg magic
             
+            # 2. Process for Display
             segmented_rgba = Image.open(io.BytesIO(output_bytes)).convert("RGBA")
             white_bg = Image.new("RGBA", segmented_rgba.size, "WHITE")
             white_bg.paste(segmented_rgba, (0, 0), segmented_rgba)
             processed_rgb = white_bg.convert("RGB")
 
-            # 2. Prediction
+            # 3. Inference
             img_tensor = self.transform(processed_rgb).unsqueeze(0).to(device)
             with torch.no_grad():
                 outputs = self.model(img_tensor)
@@ -159,82 +202,96 @@ class AnalysisThread(QThread):
 class LeafLens(QWidget):
     def __init__(self):
         super().__init__()
-        self.setObjectName("RootWidget") # <--- OPTIONAL FIX: Ensures background color applies correctly
-        self.setWindowTitle("LeafLens AI Pro")
-        self.setMinimumSize(1200, 800)
+        self.setObjectName("RootWidget") 
+        self.setWindowTitle("LeafLens AI Pro - Enterprise Edition")
+        self.resize(1280, 800)
+        self.setMinimumSize(1000, 700)
         self.setAcceptDrops(True)
         
-        # Data & Settings
+        # State
         self.settings = self.load_settings()
         self.prediction_history = self.load_history()
-        self.image_path = None
+        self.current_pixmap = None # For dynamic resizing
         self.tts = QTextToSpeech()
         
         self.init_model()
         self.init_ui()
-        self.apply_current_theme()
-        self.update_history_list()
+        self.apply_theme()
+        self.update_history_ui()
 
+    # ── PERSISTENCE ──
     def load_settings(self):
-        default = {"dark_mode": False, "voice_enabled": True}
+        default = {"dark_mode": True, "voice_enabled": True}
         if os.path.exists(SETTINGS_PATH):
-            try:
+            try: 
                 with open(SETTINGS_PATH, 'r') as f: return json.load(f)
             except: return default
         return default
 
     def save_settings(self):
         with open(SETTINGS_PATH, 'w') as f: json.dump(self.settings, f)
+        self.apply_theme()
 
     def load_history(self):
         if os.path.exists(HISTORY_PATH):
-            try:
+            try: 
                 with open(HISTORY_PATH, 'r') as f: return json.load(f)
             except: return []
         return []
 
     def save_history(self):
-        with open(HISTORY_PATH, 'w') as f: json.dump(self.prediction_history[:30], f)
+        with open(HISTORY_PATH, 'w') as f: json.dump(self.prediction_history[:50], f)
 
+    # ── MODEL LOAD ──
     def init_model(self):
         self.model = models.efficientnet_b0()
         self.model.classifier[1] = nn.Linear(self.model.classifier[1].in_features, NUM_CLASSES)
         if os.path.exists(MODEL_PATH):
-            try:
-                self.model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
-            except: print("Warning: Model weights not loaded.")
+            try: self.model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
+            except: pass
         self.model.to(device).eval()
         
         if os.path.exists(CLASS_NAMES_PATH):
             with open(CLASS_NAMES_PATH, "rb") as f: self.class_names = pickle.load(f)
         else: self.class_names = [f"Class {i}" for i in range(NUM_CLASSES)]
 
-    def apply_current_theme(self):
-        self.setStyleSheet(get_stylesheet(self.settings.get("dark_mode", False)))
+    def apply_theme(self):
+        self.setStyleSheet(get_stylesheet(self.settings["dark_mode"]))
 
+    # ── UI CONSTRUCTION ──
     def init_ui(self):
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        # 1. Sidebar
+        # 1. SIDEBAR
         sidebar = QFrame(); sidebar.setObjectName("Sidebar")
         side_ly = QVBoxLayout(sidebar)
-        title = QLabel("🌿 LeafLens"); title.setObjectName("SidebarTitle")
+        side_ly.setContentsMargins(0, 0, 0, 20)
         
+        title = QLabel("🌿 LeafLens"); title.setObjectName("SidebarTitle")
+        side_ly.addWidget(title)
+
         self.nav_btns = []
-        btn_data = [("🔍 Analysis", 0), ("📜 History", 1), ("⚙️ Settings", 2), ("ℹ️ About", 3)]
-        for text, idx in btn_data:
-            btn = QPushButton(f"  {text}")
+        # Added "About" here as requested
+        pages = [("🔍 Analysis", 0), ("📜 History", 1), ("⚙️ Settings", 2), ("ℹ️ About", 3)]
+        
+        for label, idx in pages:
+            btn = QPushButton(f"  {label}")
             btn.setObjectName("NavBtn"); btn.setCheckable(True)
-            btn.clicked.connect(self.make_switch_fn(idx))
+            btn.clicked.connect(lambda checked, i=idx: self.switch_page(i))
             side_ly.addWidget(btn)
             self.nav_btns.append(btn)
-
+        
         self.nav_btns[0].setChecked(True)
-        side_ly.insertWidget(0, title); side_ly.addStretch()
+        side_ly.addStretch()
+        
+        # Version Badge
+        ver = QLabel("v1.0.0")
+        ver.setStyleSheet("color: #64748b; padding-left: 35px; font-size: 12px;")
+        side_ly.addWidget(ver)
 
-        # 2. Stacked Pages
+        # 2. CONTENT AREA
         self.stack = QStackedWidget()
         self.stack.addWidget(self.create_analysis_page())
         self.stack.addWidget(self.create_history_page())
@@ -244,149 +301,250 @@ class LeafLens(QWidget):
         main_layout.addWidget(sidebar)
         main_layout.addWidget(self.stack, 1)
 
-    def make_switch_fn(self, idx):
-        return lambda: self.switch_page(idx)
+    def switch_page(self, idx):
+        for i, b in enumerate(self.nav_btns): b.setChecked(i == idx)
+        self.stack.setCurrentIndex(idx)
 
-    def switch_page(self, index):
-        for i, btn in enumerate(self.nav_btns):
-            btn.setChecked(i == index)
-        self.stack.setCurrentIndex(index)
-
-    # 📄 PAGES
+    # ── PAGES ──
     def create_analysis_page(self):
         page = QWidget(); ly = QVBoxLayout(page)
-        ly.setContentsMargins(40, 40, 40, 40); ly.setSpacing(20)
+        ly.setContentsMargins(30, 30, 30, 30); ly.setSpacing(20)
         
-        ly.addWidget(QLabel("Plant Health Scanner", objectName="Header"))
-        ly.addWidget(QLabel("Upload a leaf image to detect diseases using AI.", objectName="SubHeader"))
-        
-        work = QHBoxLayout(); work.setSpacing(30)
-        
-        # Left: Image Drop Zone
-        img_card = QFrame(objectName="Card"); img_ly = QVBoxLayout(img_card)
-        self.image_label = QLabel("Drag & Drop Leaf Image Here", objectName="DropZone")
-        self.image_label.setAlignment(Qt.AlignCenter); self.image_label.setMinimumSize(500, 450)
-        
-        row = QHBoxLayout()
-        b_btn = QPushButton("📁 Browse", objectName="SecondaryBtn"); b_btn.clicked.connect(self.browse_image)
-        a_btn = QPushButton("🚀 Analyze Image", objectName="PrimaryBtn"); a_btn.clicked.connect(self.analyze_image)
-        row.addWidget(b_btn); row.addWidget(a_btn)
-        img_ly.addWidget(self.image_label); img_ly.addLayout(row)
+        # Header
+        header = QLabel("AI Crop Diagnosis", objectName="Header")
+        ly.addWidget(header)
 
-        # Right: Results
-        res_card = QFrame(objectName="Card"); res_card.setFixedWidth(350); res_ly = QVBoxLayout(res_card)
-        res_ly.setContentsMargins(20, 20, 20, 20)
+        # Dynamic Workspace
+        work_area = QHBoxLayout(); work_area.setSpacing(20)
+
+        # LEFT: Image Card (Dynamic)
+        img_card = QFrame(objectName="Card")
+        img_card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        img_ly = QVBoxLayout(img_card)
         
-        self.res_title = QLabel("Ready to Scan", objectName="Header")
-        self.res_conf = QLabel("--%", objectName="ResultText"); self.res_conf.setAlignment(Qt.AlignCenter)
-        self.res_details = QLabel("Results will appear here after analysis."); self.res_details.setWordWrap(True)
+        self.image_label = QLabel("Drag & Drop Leaf Image Here\n\n(Supports JPG, PNG)", objectName="DropZone")
+        self.image_label.setAlignment(Qt.AlignCenter)
+        self.image_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        
+        btn_row = QHBoxLayout()
+        b_btn = QPushButton("📁 Browse Image", objectName="SecondaryBtn"); b_btn.clicked.connect(self.browse_image)
+        a_btn = QPushButton("🚀 Run Analysis", objectName="PrimaryBtn"); a_btn.clicked.connect(self.analyze_image)
+        btn_row.addWidget(b_btn); btn_row.addWidget(a_btn)
+        
+        img_ly.addWidget(self.image_label, 1)
+        img_ly.addLayout(btn_row)
+
+        # RIGHT: Results Card (Fixed Width)
+        res_card = QFrame(objectName="Card"); res_card.setFixedWidth(420)
+        res_ly = QVBoxLayout(res_card)
+        
+        self.res_title = QLabel("System Ready", objectName="ResultTitle")
+        self.res_percent = QLabel("--%", objectName="BigPercent")
+        self.res_percent.setAlignment(Qt.AlignLeft)
+
+        # Top 3 Section
+        top3_lbl = QLabel("PROBABILITY BREAKDOWN", objectName="SectionTitle")
+        self.top3_box = QLabel("1. --\n2. --\n3. --")
+        self.top3_box.setStyleSheet("color: #94a3b8; line-height: 140%; margin-bottom: 10px;")
+        
+        # Recommendations
+        rec_lbl = QLabel("RECOMMENDATIONS", objectName="SectionTitle")
+        self.rec_text = QLabel("Upload an image to generate a treatment plan.")
+        self.rec_text.setWordWrap(True)
+        self.rec_text.setStyleSheet("color: #cbd5e1; line-height: 130%;")
+        
         self.progress = QProgressBar(); self.progress.setVisible(False)
-        self.progress.setTextVisible(False)
-        
+
         res_ly.addWidget(self.res_title)
-        res_ly.addWidget(self.res_conf)
-        res_ly.addSpacing(15)
-        res_ly.addWidget(self.res_details)
-        res_ly.addStretch()
+        res_ly.addWidget(self.res_percent)
+        res_ly.addSpacing(10)
+        res_ly.addWidget(top3_lbl)
+        res_ly.addWidget(self.top3_box)
+        res_ly.addSpacing(10)
+        res_ly.addWidget(rec_lbl)
+        res_ly.addWidget(self.rec_text, 1) # Stretch to fill
         res_ly.addWidget(self.progress)
+
+        # Layout Weights: Image gets 3 parts, Result gets 1 part (static width but logic holds)
+        work_area.addWidget(img_card, 3)
+        work_area.addWidget(res_card, 0) 
         
-        work.addWidget(img_card, 2); work.addWidget(res_card, 1)
-        ly.addLayout(work); return page
+        ly.addLayout(work_area)
+        return page
 
     def create_history_page(self):
-        page = QWidget(); ly = QVBoxLayout(page); ly.setContentsMargins(40, 40, 40, 40)
-        ly.addWidget(QLabel("Analysis History", objectName="Header"))
+        page = QWidget(); ly = QVBoxLayout(page); ly.setContentsMargins(40,40,40,40)
+        ly.addWidget(QLabel("Recent Diagnoses", objectName="Header"))
         self.history_list = QListWidget()
         ly.addWidget(self.history_list)
         btn = QPushButton("Clear History", objectName="SecondaryBtn"); btn.clicked.connect(self.clear_history)
-        ly.addWidget(btn); return page
+        ly.addWidget(btn, 0, Qt.AlignRight)
+        return page
 
     def create_settings_page(self):
-        page = QWidget(); ly = QVBoxLayout(page); ly.setContentsMargins(100, 50, 100, 50); ly.setSpacing(30)
-        ly.addWidget(QLabel("Application Settings", objectName="Header"))
-        card = QFrame(objectName="Card"); c_ly = QVBoxLayout(card); c_ly.setContentsMargins(30,30,30,30)
-
-        self.dark_check = QCheckBox("Enable Dark Mode")
-        self.dark_check.setChecked(self.settings.get("dark_mode", False))
-        self.dark_check.toggled.connect(self.toggle_dark_mode)
-
-        self.voice_check = QCheckBox("Enable Voice Feedback")
+        page = QWidget(); ly = QVBoxLayout(page); ly.setContentsMargins(50,50,50,50)
+        ly.addWidget(QLabel("Preferences", objectName="Header"))
+        
+        card = QFrame(objectName="Card"); card_ly = QVBoxLayout(card)
+        
+        self.voice_check = QCheckBox("Enable Voice Assistant (Speak Results)")
         self.voice_check.setChecked(self.settings.get("voice_enabled", True))
         self.voice_check.toggled.connect(self.toggle_voice)
-
-        c_ly.addWidget(self.dark_check); c_ly.addSpacing(20); c_ly.addWidget(self.voice_check)
-        ly.addWidget(card); ly.addStretch(); return page
+        
+        self.dark_check = QCheckBox("Enable Dark Mode")
+        self.dark_check.setChecked(self.settings.get("dark_mode", True))
+        self.dark_check.toggled.connect(self.toggle_dark)
+        
+        card_ly.addWidget(self.voice_check)
+        card_ly.addSpacing(10)
+        card_ly.addWidget(self.dark_check)
+        
+        ly.addWidget(card); ly.addStretch()
+        return page
 
     def create_about_page(self):
-        page = QWidget(); ly = QVBoxLayout(page); ly.setAlignment(Qt.AlignCenter)
-        info = QLabel("<h2 style='text-align:center; color:#059669;'>LeafLens AI Pro</h2><p style='color:#64748b;'>Background Removal + EfficientNet Analysis.<br>Version 2.0</p>")
-        info.setAlignment(Qt.AlignCenter); ly.addWidget(info); return page
+            page = QWidget(); ly = QVBoxLayout(page)
+            # Centers the widgets within the layout
+            ly.setAlignment(Qt.AlignCenter) 
+            
+            # 1. Title
+            title = QLabel("LeafLens AI")
+            title.setStyleSheet("font-size: 32px; font-weight: bold; color: #34d399;")
+            title.setAlignment(Qt.AlignCenter) # <--- ADD THIS to center the text
+            
+            # 2. Description
+            desc = QLabel(
+                "AI-Powered Potato & Tomato Disease Detection\n"
+                "Built with EfficientNet-B0 and Background Removal"
+            )
+            desc.setAlignment(Qt.AlignCenter) # <--- ADD THIS to center the text
+            desc.setStyleSheet("line-height: 150%; font-size: 16px; margin-top: 10px;")
+            
+            # 3. Copyright
+            copy = QLabel("© 2026 LeafLens Inc.\nDesigned for Agricultural Efficiency")
+            copy.setStyleSheet("color: #64748b; margin-top: 25px; font-size: 13px;")
+            copy.setAlignment(Qt.AlignCenter) # <--- ADD THIS to center the text
+            
+            ly.addWidget(title)
+            ly.addWidget(desc)
+            ly.addWidget(copy)
+            
+            return page
 
-    # ⚙️ LOGIC
-    def toggle_dark_mode(self, enabled):
-        self.settings["dark_mode"] = enabled
-        self.save_settings(); self.apply_current_theme()
+    # ── LOGIC ──
+    def toggle_voice(self, checked):
+        self.settings["voice_enabled"] = checked; self.save_settings()
 
-    def toggle_voice(self, enabled):
-        self.settings["voice_enabled"] = enabled; self.save_settings()
+    def toggle_dark(self, checked):
+        self.settings["dark_mode"] = checked; self.save_settings()
+
+    # DYNAMIC RESIZE LOGIC
+    def resizeEvent(self, event):
+        # When window resizes, re-scale the image if it exists
+        if self.current_pixmap:
+            self.image_label.setPixmap(self.current_pixmap.scaled(
+                self.image_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation
+            ))
+        super().resizeEvent(event)
 
     def browse_image(self):
         path, _ = QFileDialog.getOpenFileName(self, "Select Image", "", "Images (*.jpg *.png *.jpeg)")
         if path: self.load_image(path)
 
+    def dragEnterEvent(self, event: QDragEnterEvent):
+        if event.mimeData().hasUrls(): event.accept()
+        else: event.ignore()
+
+    def dropEvent(self, event: QDropEvent):
+        files = [u.toLocalFile() for u in event.mimeData().urls()]
+        if files: self.load_image(files[0])
+
     def load_image(self, path):
         self.image_path = path
-        pix = QPixmap(path).scaled(500, 500, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        self.image_label.setPixmap(pix); self.image_label.setText("")
-
-    def dragEnterEvent(self, e): e.accept() if e.mimeData().hasUrls() else e.ignore()
-    def dropEvent(self, e):
-        path = e.mimeData().urls()[0].toLocalFile()
-        if path.lower().endswith(('.png', '.jpg', '.jpeg')): self.load_image(path)
+        self.current_pixmap = QPixmap(path)
+        # Trigger resize logic immediately
+        self.image_label.setPixmap(self.current_pixmap.scaled(
+            self.image_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation
+        ))
+        self.image_label.setText("")
 
     def analyze_image(self):
         if not self.image_path: return
-        self.progress.setVisible(True); self.progress.setRange(0, 0) # Indeterminate loading
+        self.progress.setVisible(True); self.progress.setRange(0, 0)
         self.thread = AnalysisThread(self.image_path, self.model, self.class_names)
         self.thread.finished.connect(self.handle_result); self.thread.start()
 
     def handle_result(self, res):
         self.progress.setVisible(False)
-        if isinstance(res, Exception):
-            QMessageBox.critical(self, "Error", f"Analysis failed: {res}"); return
-        
-        # 1. Show Segmented Image
-        res['processed_pil'].save("debug_view.png")
-        self.image_label.setPixmap(QPixmap("debug_view.png").scaled(500, 500, Qt.KeepAspectRatio))
-        
-        # 2. Display Result
-        clean_name = res['disease'].replace("___", " - ").replace("_", " ")
-        self.res_title.setText(clean_name)
-        self.res_conf.setText(f"{res['confidence']:.1f}% Match")
-        
-        details = "<br><b>Top Alternatives:</b><br>"
-        for n, p in res['top_3']: details += f"• {n.replace('_',' ')}: {p:.1f}%<br>"
-        self.res_details.setText(details)
-        
-        if self.settings.get("voice_enabled", True):
-            self.tts.say(f"Result: {clean_name}")
-            
-        # 3. History
-        entry = {'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M"), 'disease': clean_name, 'conf': f"{res['confidence']:.1f}%"}
-        self.prediction_history.insert(0, entry)
-        self.save_history(); self.update_history_list()
+        if isinstance(res, Exception): 
+            QMessageBox.warning(self, "Error", str(res)); return
 
-    def update_history_list(self):
-        self.history_list.clear()
-        for h in self.prediction_history:
-            conf_val = h.get('conf') or h.get('confidence') or "--"
-            self.history_list.addItem(f"{h['timestamp']} - {h['disease']} ({conf_val})")
+        # 1. Update Image (with removed bg)
+        res['processed_pil'].save("processed_temp.png")
+        self.current_pixmap = QPixmap("processed_temp.png")
+        self.image_label.setPixmap(self.current_pixmap.scaled(
+            self.image_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation
+        ))
+
+        # 2. Extract Data
+        raw_name = res['disease']
+        conf = res['confidence']
+        top_3 = res['top_3']
+        
+        # 3. Update Text
+        self.res_percent.setText(f"{conf:.1f}%")
+        clean_name = raw_name.replace("___", " - ").replace("_", " ")
+        self.res_title.setText(clean_name)
+        
+        # Color Coding
+        if "healthy" in raw_name.lower(): self.res_title.setStyleSheet("color: #34d399; font-weight: bold; font-size: 20px;")
+        else: self.res_title.setStyleSheet("color: #f87171; font-weight: bold; font-size: 20px;")
+
+        # Top 3 List
+        top_str = ""
+        for i, (n, p) in enumerate(top_3):
+            n_clean = n.replace("___", " ").replace("_", " ")
+            top_str += f"{i+1}. {n_clean} ({p:.1f}%)\n"
+        self.top3_box.setText(top_str.strip())
+
+        # Recommendations
+        search_key = raw_name.lower().replace("_", "")
+        info = DISEASE_KNOWLEDGE_BASE.get(search_key, {
+            "Remedy": "Consult an expert.", "Organic": "Monitor closely.", "Action": "Isolate plant."
+        })
+        
+        rec_html = f"""
+        <p style='color:#38bdf8'><b>💊 Chemical:</b><br>{info['Remedy']}</p>
+        <p style='color:#4ade80'><b>🌿 Organic:</b><br>{info['Organic']}</p>
+        <p style='color:#fbbf24'><b>🚜 Action:</b><br>{info['Action']}</p>
+        """
+        self.rec_text.setText(rec_html)
+
+        # 4. History & Voice
+        current_time = datetime.now().strftime("%d/%m %H:%M") # Added date (%d/%m)
+        entry = {
+            'time': current_time, 
+            'name': clean_name, 
+            'conf': f"{conf:.1f}%"
+        }
+        self.prediction_history.insert(0, entry)
+        self.save_history()
+        self.update_history_ui()
+
+        if self.settings.get("voice_enabled", True):
+            self.tts.say(f"Diagnosis complete. Detected {clean_name} with {int(conf)} percent confidence.")
+
+    def update_history_ui(self):
+            self.history_list.clear()
+            for h in self.prediction_history:
+                # Displays as [11/02 14:30] Potato Early Blight - 98.2%
+                self.history_list.addItem(f"[{h['time']}] {h['name']} - {h['conf']}")
 
     def clear_history(self):
-        self.prediction_history = []; self.update_history_list()
+        self.prediction_history = []
+        self.update_history_ui()
         if os.path.exists(HISTORY_PATH): os.remove(HISTORY_PATH)
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    app.setStyle("Fusion")
     win = LeafLens(); win.show(); sys.exit(app.exec())
