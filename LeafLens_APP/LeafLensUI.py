@@ -200,7 +200,7 @@ class LeafLens(QWidget):
     def __init__(self):
         super().__init__()
         self.setObjectName("RootWidget") 
-        self.setWindowTitle("LeafLens AI Pro - Enterprise Edition")
+        self.setWindowTitle("LeafLens AI")
         self.resize(1280, 800)
         self.setMinimumSize(1000, 700)
         self.setAcceptDrops(True)
