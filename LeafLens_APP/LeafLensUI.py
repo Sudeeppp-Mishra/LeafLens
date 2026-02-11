@@ -521,9 +521,10 @@ class LeafLens(QWidget):
         self.rec_text.setText(rec_html)
 
         # 4. History & Voice
-        current_time = datetime.now().strftime("%d/%m %H:%M") # Added date (%d/%m)
+        # %Y adds the full year (e.g., 2026)
+        full_date_time = datetime.now().strftime("%d/%m/%Y %H:%M") 
         entry = {
-            'time': current_time, 
+            'time': full_date_time, 
             'name': clean_name, 
             'conf': f"{conf:.1f}%"
         }
@@ -537,8 +538,11 @@ class LeafLens(QWidget):
     def update_history_ui(self):
             self.history_list.clear()
             for h in self.prediction_history:
-                # Displays as [11/02 14:30] Potato Early Blight - 98.2%
-                self.history_list.addItem(f"[{h['time']}] {h['name']} - {h['conf']}")
+                # This will now display: [11/02/2026 05:52] Tomato Healthy - 99.1%
+                time_val = h.get('time', 'Unknown Date')
+                name_val = h.get('name', 'Unknown')
+                conf_val = h.get('conf', '0%')
+                self.history_list.addItem(f"[{time_val}] {name_val} - {conf_val}")
 
     def clear_history(self):
         self.prediction_history = []
