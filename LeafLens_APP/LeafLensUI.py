@@ -166,19 +166,16 @@ class AnalysisThread(QThread):
 
     def run(self):
         try:
-            # 1. Load & Remove Background
             raw_image = Image.open(self.image_path).convert("RGB")
             img_byte_arr = io.BytesIO()
             raw_image.save(img_byte_arr, format='PNG')
-            output_bytes = remove(img_byte_arr.getvalue()) # Rembg magic
+            output_bytes = remove(img_byte_arr.getvalue())
             
-            # 2. Process for Display
             segmented_rgba = Image.open(io.BytesIO(output_bytes)).convert("RGBA")
             white_bg = Image.new("RGBA", segmented_rgba.size, "WHITE")
             white_bg.paste(segmented_rgba, (0, 0), segmented_rgba)
             processed_rgb = white_bg.convert("RGB")
 
-            # 3. Inference
             img_tensor = self.transform(processed_rgb).unsqueeze(0).to(device)
             with torch.no_grad():
                 outputs = self.model(img_tensor)
@@ -208,10 +205,9 @@ class LeafLens(QWidget):
         self.setMinimumSize(1000, 700)
         self.setAcceptDrops(True)
         
-        # State
         self.settings = self.load_settings()
         self.prediction_history = self.load_history()
-        self.current_pixmap = None # For dynamic resizing
+        self.current_pixmap = None 
         self.tts = QTextToSpeech()
         
         self.init_model()
@@ -219,7 +215,6 @@ class LeafLens(QWidget):
         self.apply_theme()
         self.update_history_ui()
 
-    # ── PERSISTENCE ──
     def load_settings(self):
         default = {"dark_mode": True, "voice_enabled": True}
         if os.path.exists(SETTINGS_PATH):
@@ -242,7 +237,6 @@ class LeafLens(QWidget):
     def save_history(self):
         with open(HISTORY_PATH, 'w') as f: json.dump(self.prediction_history[:50], f)
 
-    # ── MODEL LOAD ──
     def init_model(self):
         self.model = models.efficientnet_b0()
         self.model.classifier[1] = nn.Linear(self.model.classifier[1].in_features, NUM_CLASSES)
@@ -258,13 +252,11 @@ class LeafLens(QWidget):
     def apply_theme(self):
         self.setStyleSheet(get_stylesheet(self.settings["dark_mode"]))
 
-    # ── UI CONSTRUCTION ──
     def init_ui(self):
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        # 1. SIDEBAR
         sidebar = QFrame(); sidebar.setObjectName("Sidebar")
         side_ly = QVBoxLayout(sidebar)
         side_ly.setContentsMargins(0, 0, 0, 20)
@@ -273,7 +265,6 @@ class LeafLens(QWidget):
         side_ly.addWidget(title)
 
         self.nav_btns = []
-        # Added "About" here as requested
         pages = [("🔍 Analysis", 0), ("📜 History", 1), ("⚙️ Settings", 2), ("ℹ️ About", 3)]
         
         for label, idx in pages:
@@ -286,12 +277,10 @@ class LeafLens(QWidget):
         self.nav_btns[0].setChecked(True)
         side_ly.addStretch()
         
-        # Version Badge
         ver = QLabel("v1.0.0")
         ver.setStyleSheet("color: #64748b; padding-left: 35px; font-size: 12px;")
         side_ly.addWidget(ver)
 
-        # 2. CONTENT AREA
         self.stack = QStackedWidget()
         self.stack.addWidget(self.create_analysis_page())
         self.stack.addWidget(self.create_history_page())
@@ -305,19 +294,15 @@ class LeafLens(QWidget):
         for i, b in enumerate(self.nav_btns): b.setChecked(i == idx)
         self.stack.setCurrentIndex(idx)
 
-    # ── PAGES ──
     def create_analysis_page(self):
         page = QWidget(); ly = QVBoxLayout(page)
         ly.setContentsMargins(30, 30, 30, 30); ly.setSpacing(20)
         
-        # Header
         header = QLabel("AI Crop Diagnosis", objectName="Header")
         ly.addWidget(header)
 
-        # Dynamic Workspace
         work_area = QHBoxLayout(); work_area.setSpacing(20)
 
-        # LEFT: Image Card (Dynamic)
         img_card = QFrame(objectName="Card")
         img_card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         img_ly = QVBoxLayout(img_card)
@@ -334,7 +319,6 @@ class LeafLens(QWidget):
         img_ly.addWidget(self.image_label, 1)
         img_ly.addLayout(btn_row)
 
-        # RIGHT: Results Card (Fixed Width)
         res_card = QFrame(objectName="Card"); res_card.setFixedWidth(420)
         res_ly = QVBoxLayout(res_card)
         
@@ -342,12 +326,10 @@ class LeafLens(QWidget):
         self.res_percent = QLabel("--%", objectName="BigPercent")
         self.res_percent.setAlignment(Qt.AlignLeft)
 
-        # Top 3 Section
         top3_lbl = QLabel("PROBABILITY BREAKDOWN", objectName="SectionTitle")
         self.top3_box = QLabel("1. --\n2. --\n3. --")
         self.top3_box.setStyleSheet("color: #94a3b8; line-height: 140%; margin-bottom: 10px;")
         
-        # Recommendations
         rec_lbl = QLabel("RECOMMENDATIONS", objectName="SectionTitle")
         self.rec_text = QLabel("Upload an image to generate a treatment plan.")
         self.rec_text.setWordWrap(True)
@@ -362,10 +344,9 @@ class LeafLens(QWidget):
         res_ly.addWidget(self.top3_box)
         res_ly.addSpacing(10)
         res_ly.addWidget(rec_lbl)
-        res_ly.addWidget(self.rec_text, 1) # Stretch to fill
+        res_ly.addWidget(self.rec_text, 1)
         res_ly.addWidget(self.progress)
 
-        # Layout Weights: Image gets 3 parts, Result gets 1 part (static width but logic holds)
         work_area.addWidget(img_card, 3)
         work_area.addWidget(res_card, 0) 
         
@@ -375,8 +356,20 @@ class LeafLens(QWidget):
     def create_history_page(self):
         page = QWidget(); ly = QVBoxLayout(page); ly.setContentsMargins(40,40,40,40)
         ly.addWidget(QLabel("Recent Diagnoses", objectName="Header"))
+        
+        # History List
         self.history_list = QListWidget()
-        ly.addWidget(self.history_list)
+        ly.addWidget(self.history_list, 1)
+
+        # TRENDS FEATURE
+        ly.addSpacing(20)
+        ly.addWidget(QLabel("DISEASE PREVALENCE TRENDS", objectName="SectionTitle"))
+        
+        self.stats_container = QFrame(objectName="Card")
+        self.stats_ly = QVBoxLayout(self.stats_container)
+        self.stats_ly.setContentsMargins(20, 20, 20, 20)
+        ly.addWidget(self.stats_container)
+
         btn = QPushButton("Clear History", objectName="SecondaryBtn"); btn.clicked.connect(self.clear_history)
         ly.addWidget(btn, 0, Qt.AlignRight)
         return page
@@ -384,63 +377,39 @@ class LeafLens(QWidget):
     def create_settings_page(self):
         page = QWidget(); ly = QVBoxLayout(page); ly.setContentsMargins(50,50,50,50)
         ly.addWidget(QLabel("Preferences", objectName="Header"))
-        
         card = QFrame(objectName="Card"); card_ly = QVBoxLayout(card)
-        
         self.voice_check = QCheckBox("Enable Voice Assistant (Speak Results)")
         self.voice_check.setChecked(self.settings.get("voice_enabled", True))
         self.voice_check.toggled.connect(self.toggle_voice)
-        
         self.dark_check = QCheckBox("Enable Dark Mode")
         self.dark_check.setChecked(self.settings.get("dark_mode", True))
         self.dark_check.toggled.connect(self.toggle_dark)
-        
-        card_ly.addWidget(self.voice_check)
-        card_ly.addSpacing(10)
-        card_ly.addWidget(self.dark_check)
-        
+        card_ly.addWidget(self.voice_check); card_ly.addSpacing(10); card_ly.addWidget(self.dark_check)
         ly.addWidget(card); ly.addStretch()
         return page
 
     def create_about_page(self):
-            page = QWidget(); ly = QVBoxLayout(page)
-            # Centers the widgets within the layout
-            ly.setAlignment(Qt.AlignCenter) 
-            
-            # 1. Title
-            title = QLabel("LeafLens AI")
-            title.setStyleSheet("font-size: 32px; font-weight: bold; color: #34d399;")
-            title.setAlignment(Qt.AlignCenter) # <--- ADD THIS to center the text
-            
-            # 2. Description
-            desc = QLabel(
-                "AI-Powered Potato & Tomato Disease Detection\n"
-                "Built with EfficientNet-B0 and Background Removal"
-            )
-            desc.setAlignment(Qt.AlignCenter) # <--- ADD THIS to center the text
-            desc.setStyleSheet("line-height: 150%; font-size: 16px; margin-top: 10px;")
-            
-            # 3. Copyright
-            copy = QLabel("© 2026 LeafLens Inc.\nDesigned for Agricultural Efficiency")
-            copy.setStyleSheet("color: #64748b; margin-top: 25px; font-size: 13px;")
-            copy.setAlignment(Qt.AlignCenter) # <--- ADD THIS to center the text
-            
-            ly.addWidget(title)
-            ly.addWidget(desc)
-            ly.addWidget(copy)
-            
-            return page
+        page = QWidget(); ly = QVBoxLayout(page)
+        ly.setAlignment(Qt.AlignCenter) 
+        title = QLabel("LeafLens AI")
+        title.setStyleSheet("font-size: 32px; font-weight: bold; color: #34d399;")
+        title.setAlignment(Qt.AlignCenter) 
+        desc = QLabel("AI-Powered Potato & Tomato Disease Detection\nBuilt with EfficientNet-B0 and Background Removal")
+        desc.setAlignment(Qt.AlignCenter) 
+        desc.setStyleSheet("line-height: 150%; font-size: 16px; margin-top: 10px;")
+        copy = QLabel("© 2026 LeafLens Inc.\nDesigned for Agricultural Efficiency")
+        copy.setStyleSheet("color: #64748b; margin-top: 25px; font-size: 13px;")
+        copy.setAlignment(Qt.AlignCenter) 
+        ly.addWidget(title); ly.addWidget(desc); ly.addWidget(copy)
+        return page
 
-    # ── LOGIC ──
     def toggle_voice(self, checked):
         self.settings["voice_enabled"] = checked; self.save_settings()
 
     def toggle_dark(self, checked):
         self.settings["dark_mode"] = checked; self.save_settings()
 
-    # DYNAMIC RESIZE LOGIC
     def resizeEvent(self, event):
-        # When window resizes, re-scale the image if it exists
         if self.current_pixmap:
             self.image_label.setPixmap(self.current_pixmap.scaled(
                 self.image_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation
@@ -462,7 +431,6 @@ class LeafLens(QWidget):
     def load_image(self, path):
         self.image_path = path
         self.current_pixmap = QPixmap(path)
-        # Trigger resize logic immediately
         self.image_label.setPixmap(self.current_pixmap.scaled(
             self.image_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation
         ))
@@ -479,35 +447,29 @@ class LeafLens(QWidget):
         if isinstance(res, Exception): 
             QMessageBox.warning(self, "Error", str(res)); return
 
-        # 1. Update Image (with removed bg)
         res['processed_pil'].save("processed_temp.png")
         self.current_pixmap = QPixmap("processed_temp.png")
         self.image_label.setPixmap(self.current_pixmap.scaled(
             self.image_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation
         ))
 
-        # 2. Extract Data
         raw_name = res['disease']
         conf = res['confidence']
         top_3 = res['top_3']
         
-        # 3. Update Text
         self.res_percent.setText(f"{conf:.1f}%")
         clean_name = raw_name.replace("___", " - ").replace("_", " ")
         self.res_title.setText(clean_name)
         
-        # Color Coding
         if "healthy" in raw_name.lower(): self.res_title.setStyleSheet("color: #34d399; font-weight: bold; font-size: 20px;")
         else: self.res_title.setStyleSheet("color: #f87171; font-weight: bold; font-size: 20px;")
 
-        # Top 3 List
         top_str = ""
         for i, (n, p) in enumerate(top_3):
             n_clean = n.replace("___", " ").replace("_", " ")
             top_str += f"{i+1}. {n_clean} ({p:.1f}%)\n"
         self.top3_box.setText(top_str.strip())
 
-        # Recommendations
         search_key = raw_name.lower().replace("_", "")
         info = DISEASE_KNOWLEDGE_BASE.get(search_key, {
             "Remedy": "Consult an expert.", "Organic": "Monitor closely.", "Action": "Isolate plant."
@@ -520,14 +482,8 @@ class LeafLens(QWidget):
         """
         self.rec_text.setText(rec_html)
 
-        # 4. History & Voice
-        # %Y adds the full year (e.g., 2026)
         full_date_time = datetime.now().strftime("%d/%m/%Y %H:%M") 
-        entry = {
-            'time': full_date_time, 
-            'name': clean_name, 
-            'conf': f"{conf:.1f}%"
-        }
+        entry = {'time': full_date_time, 'name': clean_name, 'conf': f"{conf:.1f}%"}
         self.prediction_history.insert(0, entry)
         self.save_history()
         self.update_history_ui()
@@ -536,13 +492,50 @@ class LeafLens(QWidget):
             self.tts.say(f"Diagnosis complete. Detected {clean_name} with {int(conf)} percent confidence.")
 
     def update_history_ui(self):
-            self.history_list.clear()
-            for h in self.prediction_history:
-                # This will now display: [11/02/2026 05:52] Tomato Healthy - 99.1%
-                time_val = h.get('time', 'Unknown Date')
-                name_val = h.get('name', 'Unknown')
-                conf_val = h.get('conf', '0%')
-                self.history_list.addItem(f"[{time_val}] {name_val} - {conf_val}")
+        self.history_list.clear()
+        
+        # 1. Update List
+        for h in self.prediction_history:
+            time_val = h.get('time', 'Unknown Date')
+            name_val = h.get('name', 'Unknown')
+            conf_val = h.get('conf', '0%')
+            self.history_list.addItem(f"[{time_val}] {name_val} - {conf_val}")
+
+        # 2. Update Trends Bars
+        for i in reversed(range(self.stats_ly.count())): 
+            item = self.stats_ly.itemAt(i)
+            if item.widget(): item.widget().setParent(None)
+            elif item.layout():
+                # Manually clear sub-layouts
+                while item.layout().count():
+                    child = item.layout().takeAt(0)
+                    if child.widget(): child.widget().deleteLater()
+
+        if not self.prediction_history:
+            self.stats_ly.addWidget(QLabel("No data to visualize yet."))
+            return
+
+        counts = {}
+        for h in self.prediction_history:
+            name = h['name']
+            counts[name] = counts.get(name, 0) + 1
+        
+        sorted_counts = sorted(counts.items(), key=lambda x: x[1], reverse=True)[:3]
+        total = len(self.prediction_history)
+
+        for name, count in sorted_counts:
+            percent = (count / total) * 100
+            lbl_row = QHBoxLayout()
+            lbl_row.addWidget(QLabel(name))
+            lbl_row.addStretch()
+            lbl_row.addWidget(QLabel(f"{int(percent)}%"))
+            
+            bar = QProgressBar()
+            bar.setFixedHeight(8); bar.setRange(0, 100); bar.setValue(int(percent)); bar.setTextVisible(False)
+            
+            self.stats_ly.addLayout(lbl_row)
+            self.stats_ly.addWidget(bar)
+            self.stats_ly.addSpacing(10)
 
     def clear_history(self):
         self.prediction_history = []
