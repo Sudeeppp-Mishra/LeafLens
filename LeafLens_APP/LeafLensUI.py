@@ -3,6 +3,7 @@ import os
 import json
 import pickle
 import io
+import re
 from datetime import datetime
 
 import torch
@@ -30,6 +31,10 @@ MODEL_PATH = "final_trained_model.pth"
 CLASS_NAMES_PATH = "class_names.pkl"
 HISTORY_PATH = "prediction_history.json"
 SETTINGS_PATH = "app_settings.json"
+
+# NEW: Active Learning Config
+FAILED_SAMPLES_DIR = "uncertain_samples"
+UNCERTAINTY_THRESHOLD = 75.0  # Images with confidence < 75% will be saved for review
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -106,7 +111,6 @@ def get_stylesheet(dark_mode=False):
     QWidget {{ font-family: 'Segoe UI', sans-serif; font-size: 14px; color: {text_sub}; }}
     QWidget#RootWidget {{ background-color: {bg}; }}
     
-    /* SIDEBAR */
     QFrame#Sidebar {{ background-color: {card_bg}; border-right: 1px solid {border}; min-width: 240px; }}
     QLabel#SidebarTitle {{ color: {primary}; font-size: 26px; font-weight: 800; padding: 30px 20px; }}
     QPushButton#NavBtn {{ 
@@ -116,22 +120,18 @@ def get_stylesheet(dark_mode=False):
     QPushButton#NavBtn:checked {{ background-color: {primary}; color: {bg}; }}
     QPushButton#NavBtn:hover {{ background-color: {border}; }}
 
-    /* CARDS */
     QFrame#Card {{ background-color: {card_bg}; border-radius: 16px; border: 1px solid {border}; }}
     QLabel#Header {{ font-size: 24px; font-weight: 700; color: {text_main}; margin-bottom: 10px; }}
     
-    /* RESULTS */
     QLabel#BigPercent {{ font-size: 48px; font-weight: 900; color: {primary}; margin: 5px 0; }}
     QLabel#ResultTitle {{ font-size: 20px; font-weight: 700; color: {text_main}; }}
     QLabel#SectionTitle {{ font-size: 14px; font-weight: 700; color: {text_main}; text-transform: uppercase; letter-spacing: 1px; }}
 
-    /* IMAGE AREA */
     QLabel#DropZone {{ 
         background-color: {bg}; border: 3px dashed {border}; border-radius: 16px; 
         color: {text_sub}; font-size: 16px; font-weight: 600;
     }}
 
-    /* BUTTONS */
     QPushButton#PrimaryBtn {{ background-color: {primary}; color: {bg}; font-weight: 700; border-radius: 10px; padding: 12px; font-size: 15px; }}
     QPushButton#PrimaryBtn:hover {{ background-color: #10b981; }}
     QPushButton#SecondaryBtn {{ background-color: {card_bg}; color: {text_main}; border: 1px solid {border}; border-radius: 10px; padding: 12px; font-weight: 600; }}
@@ -147,7 +147,7 @@ def get_stylesheet(dark_mode=False):
     """
 
 # ───────────────────────────────────────────────
-# 🧵 WORKER THREAD (Background Removal + Inference)
+# 🧵 WORKER THREAD
 # ───────────────────────────────────────────────
 
 class AnalysisThread(QThread):
@@ -205,9 +205,14 @@ class LeafLens(QWidget):
         self.setMinimumSize(1000, 700)
         self.setAcceptDrops(True)
         
+        # Ensure active learning folder exists
+        if not os.path.exists(FAILED_SAMPLES_DIR):
+            os.makedirs(FAILED_SAMPLES_DIR)
+
         self.settings = self.load_settings()
         self.prediction_history = self.load_history()
         self.current_pixmap = None 
+        self.image_path = None
         self.tts = QTextToSpeech()
         
         self.init_model()
@@ -216,7 +221,7 @@ class LeafLens(QWidget):
         self.update_history_ui()
 
     def load_settings(self):
-        default = {"dark_mode": True, "voice_enabled": True}
+        default = {"dark_mode": True, "voice_enabled": True, "read_recommendations": True}
         if os.path.exists(SETTINGS_PATH):
             try: 
                 with open(SETTINGS_PATH, 'r') as f: return json.load(f)
@@ -250,7 +255,13 @@ class LeafLens(QWidget):
         else: self.class_names = [f"Class {i}" for i in range(NUM_CLASSES)]
 
     def apply_theme(self):
-        self.setStyleSheet(get_stylesheet(self.settings["dark_mode"]))
+        self.setStyleSheet(get_stylesheet(self.settings.get("dark_mode", True)))
+
+    def clean_text_for_speech(self, text):
+        clean = re.sub(r'<[^>]+>', ' ', text)
+        clean = re.sub(r'\s+', ' ', clean)
+        clean = clean.encode('ascii', 'ignore').decode('ascii')
+        return clean.strip()
 
     def init_ui(self):
         main_layout = QHBoxLayout(self)
@@ -277,8 +288,8 @@ class LeafLens(QWidget):
         self.nav_btns[0].setChecked(True)
         side_ly.addStretch()
         
-        ver = QLabel("v1.0.0")
-        ver.setStyleSheet("color: #64748b; padding-left: 35px; font-size: 12px;")
+        ver = QLabel("v1.1.0 - Active Learning")
+        ver.setStyleSheet("color: #64748b; padding-left: 35px; font-size: 11px;")
         side_ly.addWidget(ver)
 
         self.stack = QStackedWidget()
@@ -356,20 +367,14 @@ class LeafLens(QWidget):
     def create_history_page(self):
         page = QWidget(); ly = QVBoxLayout(page); ly.setContentsMargins(40,40,40,40)
         ly.addWidget(QLabel("Recent Diagnoses", objectName="Header"))
-        
-        # History List
         self.history_list = QListWidget()
         ly.addWidget(self.history_list, 1)
-
-        # TRENDS FEATURE
         ly.addSpacing(20)
         ly.addWidget(QLabel("DISEASE PREVALENCE TRENDS", objectName="SectionTitle"))
-        
         self.stats_container = QFrame(objectName="Card")
         self.stats_ly = QVBoxLayout(self.stats_container)
         self.stats_ly.setContentsMargins(20, 20, 20, 20)
         ly.addWidget(self.stats_container)
-
         btn = QPushButton("Clear History", objectName="SecondaryBtn"); btn.clicked.connect(self.clear_history)
         ly.addWidget(btn, 0, Qt.AlignRight)
         return page
@@ -378,13 +383,22 @@ class LeafLens(QWidget):
         page = QWidget(); ly = QVBoxLayout(page); ly.setContentsMargins(50,50,50,50)
         ly.addWidget(QLabel("Preferences", objectName="Header"))
         card = QFrame(objectName="Card"); card_ly = QVBoxLayout(card)
-        self.voice_check = QCheckBox("Enable Voice Assistant (Speak Results)")
+        
+        self.voice_check = QCheckBox("Enable Voice: Auto-read Results")
         self.voice_check.setChecked(self.settings.get("voice_enabled", True))
-        self.voice_check.toggled.connect(self.toggle_voice)
+        self.voice_check.toggled.connect(lambda v: self.update_setting("voice_enabled", v))
+        
+        self.rec_voice_check = QCheckBox("Voice: Include Recommendations in Auto-read")
+        self.rec_voice_check.setChecked(self.settings.get("read_recommendations", True))
+        self.rec_voice_check.toggled.connect(lambda v: self.update_setting("read_recommendations", v))
+
         self.dark_check = QCheckBox("Enable Dark Mode")
         self.dark_check.setChecked(self.settings.get("dark_mode", True))
         self.dark_check.toggled.connect(self.toggle_dark)
-        card_ly.addWidget(self.voice_check); card_ly.addSpacing(10); card_ly.addWidget(self.dark_check)
+
+        card_ly.addWidget(self.voice_check); card_ly.addSpacing(5)
+        card_ly.addWidget(self.rec_voice_check); card_ly.addSpacing(10)
+        card_ly.addWidget(self.dark_check)
         ly.addWidget(card); ly.addStretch()
         return page
 
@@ -394,7 +408,7 @@ class LeafLens(QWidget):
         title = QLabel("LeafLens AI")
         title.setStyleSheet("font-size: 32px; font-weight: bold; color: #34d399;")
         title.setAlignment(Qt.AlignCenter) 
-        desc = QLabel("AI-Powered Potato & Tomato Disease Detection\nBuilt with EfficientNet-B0 and Background Removal")
+        desc = QLabel("AI-Powered Crop Disease Detection with Active Learning\nBuilt with EfficientNet-B0 and Human-in-the-Loop Feedback")
         desc.setAlignment(Qt.AlignCenter) 
         desc.setStyleSheet("line-height: 150%; font-size: 16px; margin-top: 10px;")
         copy = QLabel("© 2026 LeafLens Inc.\nDesigned for Agricultural Efficiency")
@@ -403,8 +417,8 @@ class LeafLens(QWidget):
         ly.addWidget(title); ly.addWidget(desc); ly.addWidget(copy)
         return page
 
-    def toggle_voice(self, checked):
-        self.settings["voice_enabled"] = checked; self.save_settings()
+    def update_setting(self, key, value):
+        self.settings[key] = value; self.save_settings()
 
     def toggle_dark(self, checked):
         self.settings["dark_mode"] = checked; self.save_settings()
@@ -457,6 +471,17 @@ class LeafLens(QWidget):
         conf = res['confidence']
         top_3 = res['top_3']
         
+        # ───────────────────────────────────────────────
+        # 🧪 NEW: ACTIVE LEARNING LOGIC
+        # ───────────────────────────────────────────────
+        if conf < UNCERTAINTY_THRESHOLD:
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            # Format: 20260212_143005_guess_potatoearlyblight_62pct.png
+            save_name = f"{ts}_guess_{raw_name.lower().replace('_','')}_{int(conf)}pct.png"
+            save_path = os.path.join(FAILED_SAMPLES_DIR, save_name)
+            res['processed_pil'].save(save_path)
+            print(f"DEBUG: Low confidence sample saved to {save_path}")
+
         self.res_percent.setText(f"{conf:.1f}%")
         clean_name = raw_name.replace("___", " - ").replace("_", " ")
         self.res_title.setText(clean_name)
@@ -489,30 +514,23 @@ class LeafLens(QWidget):
         self.update_history_ui()
 
         if self.settings.get("voice_enabled", True):
-            self.tts.say(f"Diagnosis complete. Detected {clean_name} with {int(conf)} percent confidence.")
+            speech = f"Diagnosis complete. Detected {clean_name} with {int(conf)} percent confidence."
+            if self.settings.get("read_recommendations", True):
+                speech += f" Recommendations: Chemical remedy is {info['Remedy']}. Organic remedy is {info['Organic']}."
+            self.tts.stop()
+            self.tts.say(self.clean_text_for_speech(speech))
 
     def update_history_ui(self):
         self.history_list.clear()
-        
-        # 1. Update List
         for h in self.prediction_history:
-            time_val = h.get('time', 'Unknown Date')
-            name_val = h.get('name', 'Unknown')
-            conf_val = h.get('conf', '0%')
-            self.history_list.addItem(f"[{time_val}] {name_val} - {conf_val}")
+            self.history_list.addItem(f"[{h.get('time')}] {h.get('name')} - {h.get('conf')}")
 
-        # 2. Update Trends Bars
         for i in reversed(range(self.stats_ly.count())): 
             item = self.stats_ly.itemAt(i)
             if item.widget(): item.widget().setParent(None)
-            elif item.layout():
-                # Manually clear sub-layouts
-                while item.layout().count():
-                    child = item.layout().takeAt(0)
-                    if child.widget(): child.widget().deleteLater()
 
         if not self.prediction_history:
-            self.stats_ly.addWidget(QLabel("No data to visualize yet."))
+            self.stats_ly.addWidget(QLabel("No data yet."))
             return
 
         counts = {}
@@ -526,16 +544,9 @@ class LeafLens(QWidget):
         for name, count in sorted_counts:
             percent = (count / total) * 100
             lbl_row = QHBoxLayout()
-            lbl_row.addWidget(QLabel(name))
-            lbl_row.addStretch()
-            lbl_row.addWidget(QLabel(f"{int(percent)}%"))
-            
-            bar = QProgressBar()
-            bar.setFixedHeight(8); bar.setRange(0, 100); bar.setValue(int(percent)); bar.setTextVisible(False)
-            
-            self.stats_ly.addLayout(lbl_row)
-            self.stats_ly.addWidget(bar)
-            self.stats_ly.addSpacing(10)
+            lbl_row.addWidget(QLabel(name)); lbl_row.addStretch(); lbl_row.addWidget(QLabel(f"{int(percent)}%"))
+            bar = QProgressBar(); bar.setFixedHeight(8); bar.setRange(0, 100); bar.setValue(int(percent)); bar.setTextVisible(False)
+            self.stats_ly.addLayout(lbl_row); self.stats_ly.addWidget(bar); self.stats_ly.addSpacing(10)
 
     def clear_history(self):
         self.prediction_history = []
