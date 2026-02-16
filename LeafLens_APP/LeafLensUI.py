@@ -16,10 +16,13 @@ from PySide6.QtWidgets import (
     QApplication, QWidget, QLabel, QPushButton, QFileDialog,
     QVBoxLayout, QHBoxLayout, QMessageBox, QFrame,
     QListWidget, QProgressBar, QStackedWidget, QCheckBox,
-    QSizePolicy, QScrollArea
+    QSizePolicy, QScrollArea, QSpinBox
 )
-from PySide6.QtGui import QPixmap, QColor, QIcon, QDragEnterEvent, QDropEvent, QFont
-from PySide6.QtCore import Qt, Signal, QThread, QSize, QEvent
+from PySide6.QtGui import (
+    QPixmap, QColor, QIcon, QDragEnterEvent, QDropEvent, QFont,
+    QDesktopServices, QPainter, QBrush
+)
+from PySide6.QtCore import Qt, Signal, QThread, QSize, QEvent, QUrl, QRectF
 from PySide6.QtTextToSpeech import QTextToSpeech
 
 # ───────────────────────────────────────────────
@@ -147,6 +150,62 @@ def get_stylesheet(dark_mode=False):
     """
 
 # ───────────────────────────────────────────────
+# 🔘 CUSTOM TOGGLE SWITCH
+# ───────────────────────────────────────────────
+
+class ToggleSwitch(QCheckBox):
+    """A modern on/off sliding switch based on QCheckBox."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setCursor(Qt.PointingHandCursor)
+        self._margin = 3
+
+    def sizeHint(self):
+        # Slightly wider than tall for a pill-shaped switch
+        return QSize(46, 26)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        rect = self.rect()
+        track_rect = QRectF(
+            rect.x() + self._margin,
+            rect.y() + self._margin,
+            rect.width() - 2 * self._margin,
+            rect.height() - 2 * self._margin,
+        )
+
+        # Track
+        on_color = QColor("#22c55e")   # emerald
+        off_color = QColor("#94a3b8")  # slate
+        track_color = on_color if self.isChecked() else off_color
+
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QBrush(track_color))
+        radius = track_rect.height() / 2
+        painter.drawRoundedRect(track_rect, radius, radius)
+
+        # Thumb
+        thumb_diameter = track_rect.height() - 4
+        if self.isChecked():
+            thumb_x = track_rect.right() - thumb_diameter - 2
+        else:
+            thumb_x = track_rect.left() + 2
+
+        thumb_rect = QRectF(
+            thumb_x,
+            track_rect.top() + 2,
+            thumb_diameter,
+            thumb_diameter,
+        )
+
+        painter.setBrush(QBrush(QColor("#ffffff")))
+        painter.drawEllipse(thumb_rect)
+        painter.end()
+
+# ───────────────────────────────────────────────
 # 🧵 WORKER THREAD
 # ───────────────────────────────────────────────
 
@@ -212,6 +271,8 @@ class LeafLens(QWidget):
         self.settings = self.load_settings()
         self.prediction_history = self.load_history()
         self.current_pixmap = None 
+        self.original_pixmap = None
+        self.processed_pixmap = None
         self.image_path = None
         self.tts = QTextToSpeech()
         
@@ -221,7 +282,12 @@ class LeafLens(QWidget):
         self.update_history_ui()
 
     def load_settings(self):
-        default = {"dark_mode": True, "voice_enabled": True, "read_recommendations": True}
+        default = {
+            "dark_mode": True,
+            "voice_enabled": True,
+            "read_recommendations": True,
+            "uncertainty_threshold": UNCERTAINTY_THRESHOLD
+        }
         if os.path.exists(SETTINGS_PATH):
             try: 
                 with open(SETTINGS_PATH, 'r') as f: return json.load(f)
@@ -253,6 +319,13 @@ class LeafLens(QWidget):
         if os.path.exists(CLASS_NAMES_PATH):
             with open(CLASS_NAMES_PATH, "rb") as f: self.class_names = pickle.load(f)
         else: self.class_names = [f"Class {i}" for i in range(NUM_CLASSES)]
+
+    def get_uncertainty_threshold(self):
+        """Return the current low-confidence threshold as a float percentage."""
+        try:
+            return float(self.settings.get("uncertainty_threshold", UNCERTAINTY_THRESHOLD))
+        except (TypeError, ValueError):
+            return UNCERTAINTY_THRESHOLD
 
     def apply_theme(self):
         self.setStyleSheet(get_stylesheet(self.settings.get("dark_mode", True)))
@@ -318,21 +391,40 @@ class LeafLens(QWidget):
         img_card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         img_ly = QVBoxLayout(img_card)
         
-        self.image_label = QLabel("Drag & Drop Leaf Image Here\n\n(Supports JPG, PNG)", objectName="DropZone")
+        self.image_label = QLabel(
+            "Drag & Drop Leaf Image Here\n\n(SupportS JPG, PNG)",
+            objectName="DropZone"
+        )
         self.image_label.setAlignment(Qt.AlignCenter)
         self.image_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         
         btn_row = QHBoxLayout()
-        b_btn = QPushButton("📁 Browse Image", objectName="SecondaryBtn"); b_btn.clicked.connect(self.browse_image)
-        a_btn = QPushButton("🚀 Run Analysis", objectName="PrimaryBtn"); a_btn.clicked.connect(self.analyze_image)
-        btn_row.addWidget(b_btn); btn_row.addWidget(a_btn)
+        self.browse_btn = QPushButton("📁 Browse Image", objectName="SecondaryBtn")
+        self.browse_btn.clicked.connect(self.browse_image)
+        self.analyze_btn = QPushButton("🚀 Run Analysis", objectName="PrimaryBtn")
+        self.analyze_btn.clicked.connect(self.analyze_image)
+        btn_row.addWidget(self.browse_btn)
+        btn_row.addWidget(self.analyze_btn)
+
+        view_row = QHBoxLayout()
+        view_label = QLabel("Show processed image after analysis")
+        self.view_toggle = ToggleSwitch()
+        self.view_toggle.setChecked(True)
+        self.view_toggle.toggled.connect(self.update_image_view)
+        view_row.addWidget(view_label)
+        view_row.addStretch()
+        view_row.addWidget(self.view_toggle)
         
         img_ly.addWidget(self.image_label, 1)
         img_ly.addLayout(btn_row)
+        img_ly.addLayout(view_row)
 
         res_card = QFrame(objectName="Card"); res_card.setFixedWidth(420)
         res_ly = QVBoxLayout(res_card)
         
+        self.status_label = QLabel("Status: Ready")
+        self.status_label.setStyleSheet("color: #94a3b8; font-size: 12px;")
+
         self.res_title = QLabel("System Ready", objectName="ResultTitle")
         self.res_percent = QLabel("--%", objectName="BigPercent")
         self.res_percent.setAlignment(Qt.AlignLeft)
@@ -347,7 +439,8 @@ class LeafLens(QWidget):
         self.rec_text.setStyleSheet("color: #cbd5e1; line-height: 130%;")
         
         self.progress = QProgressBar(); self.progress.setVisible(False)
-
+        
+        res_ly.addWidget(self.status_label)
         res_ly.addWidget(self.res_title)
         res_ly.addWidget(self.res_percent)
         res_ly.addSpacing(10)
@@ -375,6 +468,16 @@ class LeafLens(QWidget):
         self.stats_ly = QVBoxLayout(self.stats_container)
         self.stats_ly.setContentsMargins(20, 20, 20, 20)
         ly.addWidget(self.stats_container)
+
+        unc_row = QHBoxLayout()
+        self.uncertain_info = QLabel("")
+        unc_btn = QPushButton("Open Uncertain Samples Folder", objectName="SecondaryBtn")
+        unc_btn.clicked.connect(self.open_uncertain_folder)
+        unc_row.addWidget(self.uncertain_info)
+        unc_row.addStretch()
+        unc_row.addWidget(unc_btn)
+        ly.addLayout(unc_row)
+
         btn = QPushButton("Clear History", objectName="SecondaryBtn"); btn.clicked.connect(self.clear_history)
         ly.addWidget(btn, 0, Qt.AlignRight)
         return page
@@ -383,22 +486,55 @@ class LeafLens(QWidget):
         page = QWidget(); ly = QVBoxLayout(page); ly.setContentsMargins(50,50,50,50)
         ly.addWidget(QLabel("Preferences", objectName="Header"))
         card = QFrame(objectName="Card"); card_ly = QVBoxLayout(card)
-        
-        self.voice_check = QCheckBox("Enable Voice: Auto-read Results")
-        self.voice_check.setChecked(self.settings.get("voice_enabled", True))
-        self.voice_check.toggled.connect(lambda v: self.update_setting("voice_enabled", v))
-        
-        self.rec_voice_check = QCheckBox("Voice: Include Recommendations in Auto-read")
-        self.rec_voice_check.setChecked(self.settings.get("read_recommendations", True))
-        self.rec_voice_check.toggled.connect(lambda v: self.update_setting("read_recommendations", v))
 
-        self.dark_check = QCheckBox("Enable Dark Mode")
-        self.dark_check.setChecked(self.settings.get("dark_mode", True))
-        self.dark_check.toggled.connect(self.toggle_dark)
+        # Voice toggle
+        voice_row = QHBoxLayout()
+        voice_label = QLabel("Enable Voice: Auto-read Results")
+        self.voice_toggle = ToggleSwitch()
+        self.voice_toggle.setChecked(self.settings.get("voice_enabled", True))
+        self.voice_toggle.toggled.connect(lambda v: self.update_setting("voice_enabled", v))
+        voice_row.addWidget(voice_label)
+        voice_row.addStretch()
+        voice_row.addWidget(self.voice_toggle)
 
-        card_ly.addWidget(self.voice_check); card_ly.addSpacing(5)
-        card_ly.addWidget(self.rec_voice_check); card_ly.addSpacing(10)
-        card_ly.addWidget(self.dark_check)
+        # Recommendations voice toggle
+        rec_row = QHBoxLayout()
+        rec_label = QLabel("Voice: Include Recommendations in Auto-read")
+        self.rec_voice_toggle = ToggleSwitch()
+        self.rec_voice_toggle.setChecked(self.settings.get("read_recommendations", True))
+        self.rec_voice_toggle.toggled.connect(lambda v: self.update_setting("read_recommendations", v))
+        rec_row.addWidget(rec_label)
+        rec_row.addStretch()
+        rec_row.addWidget(self.rec_voice_toggle)
+
+        # Dark mode toggle
+        dark_row = QHBoxLayout()
+        dark_label = QLabel("Enable Dark Mode")
+        self.dark_toggle = ToggleSwitch()
+        self.dark_toggle.setChecked(self.settings.get("dark_mode", True))
+        self.dark_toggle.toggled.connect(self.toggle_dark)
+        dark_row.addWidget(dark_label)
+        dark_row.addStretch()
+        dark_row.addWidget(self.dark_toggle)
+
+        # Uncertainty threshold
+        thresh_row = QHBoxLayout()
+        thresh_label = QLabel("Low-confidence threshold for saving uncertain samples:")
+        self.threshold_spin = QSpinBox()
+        self.threshold_spin.setRange(50, 99)
+        self.threshold_spin.setSuffix("%")
+        self.threshold_spin.setValue(int(self.get_uncertainty_threshold()))
+        self.threshold_spin.valueChanged.connect(
+            lambda v: self.update_setting("uncertainty_threshold", float(v))
+        )
+        thresh_row.addWidget(thresh_label)
+        thresh_row.addStretch()
+        thresh_row.addWidget(self.threshold_spin)
+        
+        card_ly.addLayout(voice_row); card_ly.addSpacing(5)
+        card_ly.addLayout(rec_row); card_ly.addSpacing(10)
+        card_ly.addLayout(dark_row); card_ly.addSpacing(10)
+        card_ly.addLayout(thresh_row)
         ly.addWidget(card); ly.addStretch()
         return page
 
@@ -424,11 +560,18 @@ class LeafLens(QWidget):
         self.settings["dark_mode"] = checked; self.save_settings()
 
     def resizeEvent(self, event):
-        if self.current_pixmap:
-            self.image_label.setPixmap(self.current_pixmap.scaled(
-                self.image_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation
-            ))
+        self.update_image_label()
         super().resizeEvent(event)
+
+    def update_image_label(self):
+        if self.current_pixmap:
+            self.image_label.setPixmap(
+                self.current_pixmap.scaled(
+                    self.image_label.size(),
+                    Qt.KeepAspectRatio,
+                    Qt.SmoothTransformation
+                )
+            )
 
     def browse_image(self):
         path, _ = QFileDialog.getOpenFileName(self, "Select Image", "", "Images (*.jpg *.png *.jpeg)")
@@ -444,28 +587,51 @@ class LeafLens(QWidget):
 
     def load_image(self, path):
         self.image_path = path
-        self.current_pixmap = QPixmap(path)
-        self.image_label.setPixmap(self.current_pixmap.scaled(
-            self.image_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation
-        ))
+        self.original_pixmap = QPixmap(path)
+        self.processed_pixmap = None
+        self.current_pixmap = self.original_pixmap
+        self.update_image_label()
         self.image_label.setText("")
+        if hasattr(self, "status_label"):
+            self.status_label.setText("Status: Image loaded. Ready for analysis.")
+
+    def update_image_view(self):
+        if self.view_toggle.isChecked() and self.processed_pixmap:
+            self.current_pixmap = self.processed_pixmap
+        else:
+            if self.original_pixmap:
+                self.current_pixmap = self.original_pixmap
+            elif self.processed_pixmap:
+                self.current_pixmap = self.processed_pixmap
+            else:
+                self.current_pixmap = None
+        self.update_image_label()
 
     def analyze_image(self):
-        if not self.image_path: return
+        if not self.image_path:
+            QMessageBox.information(self, "No Image", "Please select or drop a leaf image first.")
+            return
         self.progress.setVisible(True); self.progress.setRange(0, 0)
+        if hasattr(self, "analyze_btn"):
+            self.analyze_btn.setEnabled(False)
+        if hasattr(self, "status_label"):
+            self.status_label.setText("Status: Analyzing image...")
         self.thread = AnalysisThread(self.image_path, self.model, self.class_names)
         self.thread.finished.connect(self.handle_result); self.thread.start()
 
     def handle_result(self, res):
         self.progress.setVisible(False)
+        if hasattr(self, "analyze_btn"):
+            self.analyze_btn.setEnabled(True)
         if isinstance(res, Exception): 
-            QMessageBox.warning(self, "Error", str(res)); return
+            QMessageBox.warning(self, "Error", str(res))
+            if hasattr(self, "status_label"):
+                self.status_label.setText("Status: Error during analysis.")
+            return
 
         res['processed_pil'].save("processed_temp.png")
-        self.current_pixmap = QPixmap("processed_temp.png")
-        self.image_label.setPixmap(self.current_pixmap.scaled(
-            self.image_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation
-        ))
+        self.processed_pixmap = QPixmap("processed_temp.png")
+        self.update_image_view()
 
         raw_name = res['disease']
         conf = res['confidence']
@@ -474,7 +640,7 @@ class LeafLens(QWidget):
         # ───────────────────────────────────────────────
         # 🧪 NEW: ACTIVE LEARNING LOGIC
         # ───────────────────────────────────────────────
-        if conf < UNCERTAINTY_THRESHOLD:
+        if conf < self.get_uncertainty_threshold():
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
             # Format: 20260212_143005_guess_potatoearlyblight_62pct.png
             save_name = f"{ts}_guess_{raw_name.lower().replace('_','')}_{int(conf)}pct.png"
@@ -513,6 +679,9 @@ class LeafLens(QWidget):
         self.save_history()
         self.update_history_ui()
 
+        if hasattr(self, "status_label"):
+            self.status_label.setText("Status: Diagnosis complete.")
+
         if self.settings.get("voice_enabled", True):
             speech = f"Diagnosis complete. Detected {clean_name} with {int(conf)} percent confidence."
             if self.settings.get("read_recommendations", True):
@@ -547,6 +716,31 @@ class LeafLens(QWidget):
             lbl_row.addWidget(QLabel(name)); lbl_row.addStretch(); lbl_row.addWidget(QLabel(f"{int(percent)}%"))
             bar = QProgressBar(); bar.setFixedHeight(8); bar.setRange(0, 100); bar.setValue(int(percent)); bar.setTextVisible(False)
             self.stats_ly.addLayout(lbl_row); self.stats_ly.addWidget(bar); self.stats_ly.addSpacing(10)
+
+        self.refresh_uncertain_samples_info()
+
+    def refresh_uncertain_samples_info(self):
+        if not hasattr(self, "uncertain_info"):
+            return
+        try:
+            if os.path.exists(FAILED_SAMPLES_DIR):
+                files = [
+                    f for f in os.listdir(FAILED_SAMPLES_DIR)
+                    if f.lower().endswith((".png", ".jpg", ".jpeg"))
+                ]
+                count = len(files)
+            else:
+                count = 0
+            self.uncertain_info.setText(
+                f"Uncertain samples saved for labeling: {count}"
+            )
+        except Exception:
+            self.uncertain_info.setText("Uncertain samples folder not accessible.")
+
+    def open_uncertain_folder(self):
+        if not os.path.exists(FAILED_SAMPLES_DIR):
+            os.makedirs(FAILED_SAMPLES_DIR, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.abspath(FAILED_SAMPLES_DIR)))
 
     def clear_history(self):
         self.prediction_history = []
