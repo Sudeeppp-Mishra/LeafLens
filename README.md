@@ -34,7 +34,3 @@ LeafLens is an AI-powered desktop application that detects plant leaf diseases u
 - PySide6
 - OpenCV, PIL, NumPy
 - pyttsx3 (TTS)
-
-## Status
-
-🚧 Project Under Construction
